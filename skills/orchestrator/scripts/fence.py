@@ -5,6 +5,23 @@ Up to five workers run in parallel worktrees off one repository. Each brief
 names the files that worker owns; this refuses every write outside them, so the
 boundary is a fact rather than a paragraph the worker was asked to remember.
 
+Bound to its worktree (`--brief`)
+---------------------------------
+
+`dispatch.sh` starts the hook as `fence.py --brief <worktree>/.orchestrator-brief.md`.
+With `--brief` the hook uses that brief and the directory that holds it as the
+worktree root, wherever the session's `cwd` has moved to — a `cd /tmp` or a
+`cd` into a sibling checkout no longer leaves it with no brief to find. A bound
+brief that is missing or unreadable is refused: the hook fails closed.
+
+Without `--brief` (a hook wired by hand, or by an older `dispatch.sh`) the walk
+described below still applies.
+
+This is a collision guard between cooperating agents, not a security boundary.
+It sees the file-writing tools and the `Bash` commands it can parse; it does not
+see what a program run by a command writes on its own (`python script.py`,
+`bun run build`). Real isolation needs a sandbox or a container.
+
 No brief anywhere from the session's current directory up to its git toplevel
 means this is not a worker session — the orchestrator's checkout, or a
 person's — and the hook allows everything. A brief that exists but cannot be
@@ -96,6 +113,17 @@ BRIEF = ".orchestrator-brief.md"
 # A scratch directory is the exception, and it is the mechanism that makes the
 # refusal cheap: a worker parks the fix summary in `/tmp` and reports the path.
 SCRATCH_ROOTS = ("/tmp", "/var/tmp", "/dev/shm")
+
+# Generated output a worker may write outside its `owns:` list, when git also
+# ignores the path. A path qualifies when any of its segments is one of these
+# directories — `apps/web/.next/cache/a` as much as `node_modules/x/y.js`. Every
+# other ignored file (`.env`, `.env.local`, `*.local`, a key file) is fenced
+# exactly like a tracked one: being ignored only means it is in nobody's diff,
+# and a secret is exactly the kind of file that is.
+GENERATED_DIRS = frozenset({
+    "node_modules", "dist", "build", ".next", ".turbo", "coverage", "out",
+    "target", "__pycache__", ".pytest_cache", ".venv",
+})
 
 # Writing to these is not writing to a file.
 NULL_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/fd"}
@@ -897,7 +925,11 @@ def git_ignored(root, rels):
     probes = []
     for rel in rels:
         probes.append(rel)
-        if os.path.isdir(os.path.join(root, rel)):
+        # `dist/` in .gitignore matches a directory only; `mkdir -p dist` names
+        # one that does not exist yet, so a generated directory's own name is
+        # probed in its directory form too.
+        if (os.path.isdir(os.path.join(root, rel))
+                or os.path.basename(rel.rstrip("/")) in GENERATED_DIRS):
             probes.append(rel.rstrip("/") + "/")
     try:
         done = subprocess.run(
@@ -907,6 +939,14 @@ def git_ignored(root, rels):
     except Exception:
         return set()
     return {line.strip().rstrip("/") for line in done.stdout.splitlines() if line.strip()}
+
+
+def is_generated(rel):
+    """True when `rel` sits in (or is) one of `GENERATED_DIRS`, at any depth."""
+    segments = rel.split(os.sep)
+    if segments[0] == ".git":
+        return False
+    return any(segment in GENERATED_DIRS for segment in segments)
 
 
 def check(abs_target, root_real, brief_real, owns, never, what):
@@ -949,11 +989,12 @@ def check(abs_target, root_real, brief_real, owns, never, what):
                  f"another slot in this wave. Report it to the orchestrator.")
 
     if owns and not any(matches(rel, p) for p in owns):
-        # Files git does not track are in nobody's diff, so they are in nobody's
-        # fence either — build output, `node_modules`, a local `.env`. The
-        # never-list is not softened this way: that one names live contention.
-        first = rel.split(os.sep, 1)[0]
-        if first != ".git" and rel in git_ignored(root_real, [rel]):
+        # Generated output is in nobody's diff, so it is in nobody's fence
+        # either — but only inside a known build or cache directory, and only
+        # when git ignores it. Any other ignored file, `.env` among them, is
+        # fenced like a tracked one. The never-list is not softened this way:
+        # that one names live contention.
+        if is_generated(rel) and rel in git_ignored(root_real, [rel]):
             return
         owned = "\n".join(f"  - {p}" for p in owns)
         broken = unreadable(owns) + unreadable(never)
@@ -1070,20 +1111,41 @@ def find_brief(start):
         current = parent
 
 
-def main():
+def bound_brief(brief_arg):
+    """`(root, brief_path)` for a brief passed with `--brief`, or a refusal.
+
+    The worktree root is the directory that holds the brief — not the session's
+    `cwd`, which a `cd` moves anywhere. A brief that is not there fails closed:
+    the hook was told this session is fenced, so no brief is not "no fence".
+    """
+    brief_path = os.path.realpath(os.path.abspath(os.path.expanduser(brief_arg)))
+    if not os.path.isfile(brief_path):
+        deny(f"The fence is bound to the brief {brief_arg}, and it is not there. "
+             f"The fence fails closed rather than run this session unfenced — "
+             f"report this to the orchestrator.")
+    return os.path.dirname(brief_path), brief_path
+
+
+def main(brief_arg=None):
     try:
         data = json.load(sys.stdin)
     except Exception:
-        allow()  # never break a session over a malformed event
+        if brief_arg is not None:
+            deny("The fence could not read this tool call. It is bound to a "
+                 "brief, so it fails closed — report this to the orchestrator.")
+        allow()  # never break an unfenced session over a malformed event
 
     tool = data.get("tool_name")
     if tool not in FILE_WRITE_TOOLS and tool != "Bash":
         allow()
 
     session_cwd = data.get("cwd") or os.getcwd()
-    root_real, brief_path = find_brief(session_cwd)
-    if root_real is None:
-        allow()
+    if brief_arg is not None:
+        root_real, brief_path = bound_brief(brief_arg)
+    else:
+        root_real, brief_path = find_brief(session_cwd)
+        if root_real is None:
+            allow()
 
     brief_real = os.path.realpath(brief_path)
 
@@ -1146,7 +1208,10 @@ def main():
 
 
 USAGE = ("usage: fence.py --check <brief>\n"
-         "       fence.py            (PreToolUse hook: the event arrives on stdin)")
+         "       fence.py --brief <brief>  (PreToolUse hook bound to a worktree; "
+         "the event arrives on stdin)\n"
+         "       fence.py            (PreToolUse hook that looks for the brief "
+         "from the session's cwd)")
 
 
 def check_brief(path):
@@ -1187,6 +1252,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         if sys.argv[1] == "--check" and len(sys.argv) == 3:
             sys.exit(check_brief(sys.argv[2]))
+        if sys.argv[1] == "--brief" and len(sys.argv) == 3:
+            main(sys.argv[2])
         print(USAGE, file=sys.stderr)
         sys.exit(2)
     main()

@@ -458,10 +458,25 @@ off a `Bash` command — outside them, before the tool runs. A fence written as 
 sentence is a fence the hook cannot read. `dispatch.sh` runs `fence.py --check`
 on the brief first and refuses a brief whose lists contradict each other.
 
+**The fence is a collision guard, not a security boundary.** It keeps
+cooperating workers out of each other's files. It sees `Edit`, `Write`,
+`MultiEdit`, `NotebookEdit` and the `Bash` commands it can parse; it does not
+see what a program run by a command writes on its own (`python script.py`,
+`bun run build`). Real isolation needs a sandbox or a container.
+
+**Git-ignored files are fenced like tracked ones** — `.env`, `.env.local`,
+`*.local` and the rest follow `owns:` / `never:`. The one exception is an
+ignored path inside a generated directory (`node_modules/`, `dist/`, `build/`,
+`.next/`, `.turbo/`, `coverage/`, `out/`, `target/`, `__pycache__/`,
+`.pytest_cache/`, `.venv/`, at any depth), which is allowed outside `owns:`.
+
 **`.orchestrator-reply.md` is on the owns-list on purpose.** It is the channel;
 a fence that forbids it turns every question into a silent hang.
 
-**Nothing outside the worktree is writable** except `/tmp`. A worker that needs
+**Nothing outside the worktree is writable** except `/tmp`. The hook is bound
+to the worktree's brief (`fence.py --brief <worktree>/.orchestrator-brief.md`),
+so a worker that runs `cd /tmp` or `cd` into another checkout is still fenced,
+and a bound brief that has gone missing refuses every write. A worker that needs
 a file landed elsewhere (another repository, a docs site) parks it under `/tmp`
 and reports the path; landing it is yours.
 
@@ -496,8 +511,9 @@ ${CLAUDE_SKILL_DIR}/scripts/dispatch.sh <slot> <branch> <board>/round-<HHMM>-<sl
 Always pass the model explicitly. The script creates the worktree from
 `origin/<base>` (or reuses it if the branch matches), pre-records the trust and
 bypass-permissions dialogs so the session does not stop on them, copies the
-brief in as `.orchestrator-brief.md` (git-excluded), wires `fence.py` as a
-`PreToolUse` hook through `--settings` (nothing in the repository is touched),
+brief in as `.orchestrator-brief.md` (git-excluded), wires `fence.py --brief
+<that brief>` as a `PreToolUse` hook through `--settings` (nothing in the
+repository is touched),
 refuses to double-launch, and starts:
 
 ```
