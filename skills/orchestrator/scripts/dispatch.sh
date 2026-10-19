@@ -323,25 +323,26 @@ exclude '.claude/settings.local.json'
 
 # The fence hook is passed with `--settings`, a layer of its own, so nothing in
 # the repository's committed `.claude/settings.json` is touched and no repository
-# has to carry fleet tooling. Regenerated every dispatch: the path is absolute.
-cat > "$SETTINGS_FILE" <<SETTINGS
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$HERE/fence.py\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGS
+# has to carry fleet tooling. Regenerated every dispatch: the paths are absolute.
+#
+# `--brief` binds the hook to this worktree's brief. Without it the hook looks
+# for the brief from the session's cwd, and a worker that ran `cd /tmp` would
+# find none and be unfenced for the rest of the session. Bound, it uses this
+# brief wherever the session has moved, and refuses everything if the brief is
+# gone. The command is shell-quoted, then JSON-encoded, by Python rather than
+# interpolated into a heredoc, so a path with a space or a quote stays one word.
+python3 -I - "$SETTINGS_FILE" "$HERE/fence.py" "$WT/.orchestrator-brief.md" <<'PY'
+import json, shlex, sys
+settings_file, fence, brief = sys.argv[1:4]
+command = " ".join(shlex.quote(w) for w in ("python3", fence, "--brief", brief))
+settings = {"hooks": {"PreToolUse": [{
+    "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    "hooks": [{"type": "command", "command": command, "timeout": 10}],
+}]}}
+with open(settings_file, "w", encoding="utf-8") as handle:
+    json.dump(settings, handle, indent=2)
+    handle.write("\n")
+PY
 
 # `bypassPermissions`, not `acceptEdits`: acceptEdits does not cover Bash, so a
 # worker would raise a prompt on every test run — five prompts a minute on a

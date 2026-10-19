@@ -73,14 +73,17 @@ def install_brief(root, text):
         handle.write(text)
 
 
-def run(root, tool, tool_input, cwd=None):
+def run(root, tool, tool_input, cwd=None, brief=None):
     event = {
         "tool_name": tool,
         "cwd": cwd if cwd is not None else root,
         "tool_input": tool_input,
     }
+    argv = [sys.executable, FENCE]
+    if brief is not None:
+        argv += ["--brief", brief]
     done = subprocess.run(
-        [sys.executable, FENCE], input=json.dumps(event),
+        argv, input=json.dumps(event),
         capture_output=True, text=True, timeout=30,
     )
     if done.returncode != 0:
@@ -704,6 +707,171 @@ CHECK_CASES = [
 ] + ISSUE_CHECK_CASES
 
 
+# --------------------------------------------------------------------------
+# The hook bound to its worktree with `--brief`, and git-ignored files.
+#
+# Without `--brief` the hook found the brief by walking up from the session's
+# `cwd`; after `cd /tmp` it found none and allowed every later write. And any
+# file git ignores was allowed outside `owns:`, `.env` included. Now
+# `dispatch.sh` passes `--brief`, the bound hook fails closed when that brief is
+# gone, and only ignored paths inside a generated directory (`node_modules`,
+# `.next`, `dist`, ...) pass outside `owns:`.
+# --------------------------------------------------------------------------
+
+BOUND_BRIEF = """\
+# Brief — bound
+
+## What this slot owns, and what it must not open
+
+owns:
+  - src/api/**
+  - .orchestrator-reply.md
+
+never:
+  - src/web/**
+"""
+
+BOUND_GITIGNORE = ".env\n.env.*\n*.local\nnode_modules/\n.next/\ndist/\n"
+
+
+def build_bound_tree(parent):
+    """A worktree with its own brief, and a sibling checkout next to it."""
+    root = os.path.join(parent, "worktree")
+    sibling = os.path.join(parent, "sibling")
+    for path in ("src/api", "src/web", "apps/api", "apps/web/.next/cache",
+                 "node_modules/x"):
+        os.makedirs(os.path.join(root, path), exist_ok=True)
+    with open(os.path.join(root, "README.md"), "w") as handle:
+        handle.write("placeholder\n")
+    with open(os.path.join(root, ".gitignore"), "w") as handle:
+        handle.write(BOUND_GITIGNORE)
+    install_brief(root, BOUND_BRIEF)
+    subprocess.run(["git", "init", "-q", root], check=False, capture_output=True)
+    os.makedirs(sibling)
+    subprocess.run(["git", "init", "-q", sibling], check=False, capture_output=True)
+    return root, sibling
+
+
+def bound_cases(root):
+    """Cases run with `cwd` moved out of the worktree and `--brief` bound."""
+    readme = os.path.join(root, "README.md")
+    owned = os.path.join(root, "src", "api", "a.ts")
+    return [
+        ("bound: Write outside owns by absolute path, cwd moved away",
+         "Write", {"file_path": readme, "content": "x"},
+         "deny", "outside this slot's ownership fence"),
+        ("bound: Edit outside owns by absolute path, cwd moved away",
+         "Edit", {"file_path": readme, "old_string": "a", "new_string": "b"},
+         "deny", "outside this slot's ownership fence"),
+        ("bound: Bash redirect outside owns by absolute path, cwd moved away",
+         *bash(f"echo x > {readme}"), "deny", "outside this slot's ownership fence"),
+        ("bound: Bash cd back into the worktree, then write outside owns",
+         *bash(f"cd {root} && echo x > README.md"),
+         "deny", "outside this slot's ownership fence"),
+        ("bound: Write to an owned file by absolute path, cwd moved away",
+         "Write", {"file_path": owned, "content": "x"}, "allow", ""),
+        ("bound: never-listed file by absolute path, cwd moved away",
+         "Write", {"file_path": os.path.join(root, "src", "web", "x.ts"), "content": "x"},
+         "deny", "never list"),
+    ]
+
+
+IGNORED_CASES = [
+    ("ignored .env outside owns is refused",
+     "Write", {"file_path": ".env", "content": "SECRET=1"},
+     "deny", "outside this slot's ownership fence"),
+    ("ignored apps/api/.env outside owns is refused",
+     "Write", {"file_path": "apps/api/.env", "content": "SECRET=1"},
+     "deny", "outside this slot's ownership fence"),
+    ("ignored .env.production outside owns is refused",
+     "Write", {"file_path": ".env.production", "content": "x"},
+     "deny", "outside this slot's ownership fence"),
+    ("ignored settings.local outside owns is refused",
+     "Write", {"file_path": "apps/web/settings.local", "content": "x"},
+     "deny", "outside this slot's ownership fence"),
+    ("Bash echo into an ignored .env is refused",
+     *bash("echo x > .env"), "deny", "outside this slot's ownership fence"),
+    ("Bash heredoc into an ignored nested .env is refused",
+     *bash("cat > apps/api/.env <<'EOF'\nK=v\nEOF"),
+     "deny", "outside this slot's ownership fence"),
+    ("ignored node_modules output is allowed",
+     "Write", {"file_path": "node_modules/x/y.js", "content": "x"}, "allow", ""),
+    ("ignored nested .next cache is allowed",
+     "Write", {"file_path": "apps/web/.next/cache/a", "content": "x"}, "allow", ""),
+    ("Bash write into ignored nested .next cache is allowed",
+     *bash("echo x > apps/web/.next/cache/b"), "allow", ""),
+    ("Bash write into ignored dist is allowed",
+     *bash("mkdir -p dist && echo x > dist/out.js"), "allow", ""),
+    ("a generated dir that git does not ignore is still fenced",
+     "Write", {"file_path": "build/out.js", "content": "x"},
+     "deny", "outside this slot's ownership fence"),
+    ("a generated dir under a never-listed path is still refused",
+     "Write", {"file_path": "src/web/node_modules/x.js", "content": "x"},
+     "deny", "never list"),
+]
+
+
+def run_bound(failures):
+    """Returns the number of cases run."""
+    parent = tempfile.mkdtemp(prefix="fence-test-bound-", dir=scratch_parent())
+    count = 0
+    try:
+        root, sibling = build_bound_tree(parent)
+        brief = os.path.join(root, ".orchestrator-brief.md")
+        cases = bound_cases(root)
+
+        # cwd moved to /tmp, and to a sibling checkout, with the hook bound.
+        run_cases(root, cases, failures, cwd="/tmp", brief=brief)
+        run_cases(root, cases, failures, cwd=sibling, brief=brief)
+        count += 2 * len(cases)
+
+        extra = [
+            # /tmp parking still works from a moved cwd.
+            ("bound: relative write parked in /tmp", "/tmp",
+             "Write", {"file_path": "fence-test-bound-parked.md", "content": "x"},
+             "allow", ""),
+            # A relative path resolves against the session cwd: from a sibling
+            # it lands outside the worktree.
+            ("bound: relative write from a sibling checkout", sibling,
+             "Write", {"file_path": "x.txt", "content": "x"},
+             "deny", "outside this worktree"),
+            ("bound: Edit by absolute path into the worktree outside owns", root,
+             "Edit", {"file_path": os.path.join(root, "README.md"),
+                      "old_string": "a", "new_string": "b"},
+             "deny", "outside this slot's ownership fence"),
+        ]
+        for label, cwd, tool, tool_input, expected, fragment in extra:
+            run_cases(root, [(label, tool, tool_input, expected, fragment)],
+                      failures, cwd=cwd, brief=brief)
+        count += len(extra)
+
+        # Git-ignored files, bound and unbound alike.
+        run_cases(root, IGNORED_CASES, failures, brief=brief)
+        run_cases(root, IGNORED_CASES, failures)
+        count += 2 * len(IGNORED_CASES)
+
+        # Fail closed: a bound brief that is missing refuses everything,
+        # even a read-only command and a write to a path it would own.
+        missing = os.path.join(root, "gone", ".orchestrator-brief.md")
+        run_cases(root, [
+            ("bound to a missing brief: read-only Bash is refused",
+             *bash("git status --short"), "deny", "fails closed"),
+            ("bound to a missing brief: Write is refused",
+             "Write", {"file_path": "src/api/a.ts", "content": "x"},
+             "deny", "fails closed"),
+        ], failures, brief=missing)
+        os.rename(brief, brief + ".moved")
+        run_cases(root, [
+            ("bound brief removed after dispatch: Write is refused",
+             "Write", {"file_path": "src/api/a.ts", "content": "x"},
+             "deny", "fails closed"),
+        ], failures, cwd="/tmp", brief=brief)
+        count += 3
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+    return count
+
+
 def run_check(root, brief_text):
     """Drive `fence.py --check` the way `dispatch.sh` does."""
     path = os.path.join(root, "candidate-brief.md")
@@ -732,9 +900,9 @@ def scratch_parent():
     raise SystemExit("fence_test: no writable directory outside /tmp to build in")
 
 
-def run_cases(root, cases, failures, cwd=None):
+def run_cases(root, cases, failures, cwd=None, brief=None):
     for label, tool, tool_input, expected, fragment in cases:
-        decision, reason = run(root, tool, tool_input, cwd=cwd)
+        decision, reason = run(root, tool, tool_input, cwd=cwd, brief=brief)
         ok = decision == expected and (not fragment or fragment in reason)
         print(f"{'ok  ' if ok else 'FAIL'}  {label}")
         if not ok:
@@ -837,6 +1005,8 @@ def main():
     finally:
         shutil.rmtree(spec_parent, ignore_errors=True)
 
+    bound_count = run_bound(failures)
+
     print()
     if failures:
         print(f"{len(failures)} failed:")
@@ -846,7 +1016,8 @@ def main():
     total = (len(CASES) + len(SIGNAL_CASES) + len(EMIT_CASES) + len(CWD_CASES)
              + len(ANNOTATED_CASES)
              + len(CONTRADICTION_CASES) + len(CHECK_CASES) + len(SECOND_REPO_CASES)
-             + len(ISSUE_CASES) + len(DOUBLESTAR_MIDDLE_CASES) + len(spec_cases) + 2)
+             + len(ISSUE_CASES) + len(DOUBLESTAR_MIDDLE_CASES) + len(spec_cases) + 2
+             + bound_count)
     print(f"{total} passed")
     return 0
 

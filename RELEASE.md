@@ -1,5 +1,22 @@
 # Release Notes
 
+## v1.26.2 (2026-10-19)
+
+### Fixes
+
+- **Fence bound to its worktree** — `fence.py` found the brief by walking up from the session's `cwd`, so a worker that ran `cd /tmp` (or `cd` into a sibling checkout) found no brief and every later write was allowed. `dispatch.sh` now wires the hook as `fence.py --brief <worktree>/.orchestrator-brief.md` (shell-quoted, written by Python into the `--settings` file). A bound hook uses that brief and its worktree wherever `cwd` is, and refuses everything when the brief is missing or unreadable. A hook without `--brief` keeps the old walk
+- **Git-ignored files no longer skip the fence** — any ignored file was allowed outside `owns:`, `.env` included. Only ignored paths inside a generated directory (`node_modules`, `dist`, `build`, `.next`, `.turbo`, `coverage`, `out`, `target`, `__pycache__`, `.pytest_cache`, `.venv`, at any depth) are allowed now; every other ignored file follows `owns:` / `never:` like a tracked one, for `Bash` write targets too
+- **Docs** — README and the orchestrator skill say plainly that the fence is a best-effort collision guard between cooperating agents, not a security boundary
+
+### Files Changed
+
+- `skills/orchestrator/scripts/fence.py`, `dispatch.sh` — the two fixes
+- `skills/orchestrator/scripts/fence_test.py`, `wiring_test.sh` — regression tests
+- `README.md`, `skills/orchestrator/SKILL.md` — docs
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` — version bump to 1.26.2
+
+---
+
 ## v1.26.1 (2026-10-16)
 
 ### Improvements
