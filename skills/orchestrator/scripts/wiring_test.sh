@@ -213,6 +213,18 @@ PY
     check "tmux session environment has $want" "$want" \
       "$(grep -Fx -- "$want" "$T/stub/tmux-new-session.args" || true)"
   done
+  # The fence hook is bound to this worktree's brief, so a `cd` out of the
+  # worktree cannot unbind it. Run the hook command exactly as Claude Code
+  # would, from /tmp, on a write outside the slot's `owns:`.
+  local wt="$T/.wt-proj-i42-api"
+  local hook_cmd
+  hook_cmd="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' "$wt/.orchestrator-settings.json")"
+  check "the fence hook command is bound to the worktree's brief" \
+    "python3 $HERE/fence.py --brief $wt/.orchestrator-brief.md" "$hook_cmd"
+  local decision
+  decision="$(cd /tmp && printf '%s' "{\"tool_name\":\"Write\",\"cwd\":\"/tmp\",\"tool_input\":{\"file_path\":\"$wt/README.md\",\"content\":\"x\"}}" \
+    | sh -c "$hook_cmd" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecision"])')"
+  check "the bound hook refuses a write outside owns from a cwd of /tmp" "deny" "$decision"
   rm -rf "$T"
 }
 

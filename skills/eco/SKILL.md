@@ -1,6 +1,6 @@
 ---
 name: cs-eco
-description: Token saver for the current Claude Code session — filters noisy command output through agentdock-runner (bypassPermissions and auto modes only), soft-guards whole reads of big files, soft-dedups repeated reads, cuts large MCP results to head and tail, injects a concise working register, and points broad searches at the haiku `scout` agent. Per session plus a machine default; reports status and savings
+description: Token saver for the current Claude Code session — filters noisy command output through nautelle-runner (bypassPermissions and auto modes only), soft-guards whole reads of big files, soft-dedups repeated reads, cuts large MCP results to head and tail, injects a concise working register, and points broad searches at the haiku `scout` agent. Per session plus a machine default; reports status and savings
 argument-hint: "[on|off|default on|off|status|stats [--all]|snippet]"
 user-invocable: true
 allowed-tools: Bash
@@ -40,9 +40,10 @@ of these applies:
 
 - **`on`** — the output ends with the working register. From now on follow it
   for the rest of the session: it is the instruction, not an example.
-- **`command filter: unavailable (agentdock-runner not installed)`** — say that
+- **`command filter: unavailable (nautelle-runner not installed)`** — say that
   every other technique is on and that command filtering needs
-  `npm i -g agentdock-runner`.
+  `npm i -g nautelle-runner`. A machine still on `agentdock-runner` (≤ 0.13,
+  the runner's name before the rename) keeps working; status names it.
 - **`early compaction: off`** — say it can only be set when Claude Code starts
   (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=70 claude`); `/cs-orchestrator` workers get
   it automatically.
@@ -58,7 +59,7 @@ of these applies:
 
 | Technique | When eco is on |
 |---|---|
-| Command filter | `bun run test`, `tsc`, `git log`… run as `agentdock-runner filter -- …`, which keeps failures and drops noise. Only in `bypassPermissions` and `auto`; never in default, plan or acceptEdits. `AGENTDOCK_RAW=1 <cmd>` runs one command unfiltered |
+| Command filter | `bun run test`, `tsc`, `git log`… run as `nautelle-runner filter -- …` (`agentdock-runner` before 0.14), which keeps failures and drops noise. Only in `bypassPermissions` and `auto`; never in default, plan or acceptEdits. `NAUTELLE_RAW=1 <cmd>` runs one command unfiltered (`AGENTDOCK_RAW=1` on runners before 0.14; 0.14 and 0.15 accept both) |
 | Read guard | A whole-file `Read` of a file over 400 lines is refused once with its size and an outline; repeating the same call reads it |
 | Read dedup | A repeated `Read` of an unchanged range is refused once ("already in context since …"); repeating it reads it. Both reset at compaction |
 | MCP cut | MCP results over 16,000 characters (`mcpMaxChars` in the config) become head + tail; the full text is saved and its path shown |
@@ -69,4 +70,4 @@ of these applies:
 
 State: `${XDG_STATE_HOME:-~/.local/state}/cs-eco/`. Default:
 `${XDG_CONFIG_HOME:-~/.config}/cs-eco/config.json`. Savings are JSONL rows in
-AgentDock's `filter.stats` shape, per session.
+Nautelle's `filter.stats` shape, per session.

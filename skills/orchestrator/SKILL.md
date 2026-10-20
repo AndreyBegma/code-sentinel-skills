@@ -96,7 +96,7 @@ Export `OTEL_EXPORTER_OTLP_ENDPOINT` (and optional `AGENTDOCK_PROJECT` / `AGENTD
 - **Switch.** With an endpoint set and `CLAUDE_CODE_ENABLE_TELEMETRY` unset, dispatch sets it to `1` and defaults `OTEL_LOGS_EXPORTER` and `OTEL_METRICS_EXPORTER` to `otlp`. Without an endpoint nothing changes.
 - **Tags.** `OTEL_RESOURCE_ATTRIBUTES` keeps any inherited value and appends `agentdock.project` (`AGENTDOCK_PROJECT`, else parsed from `origin`), `agentdock.slot`, `agentdock.issue` (digits of an `i<n>` slot, else the brief's `Issue:` line) and `agentdock.run` (`AGENTDOCK_RUN`, else `<slot>-<YYYYMMDDHHMMSS>`). The keys are a correlation convention any collector may use.
 - **Launcher.** `CS_CLAUDE_BIN` is one executable path or name, used for the pre-flight and the launch. A value with spaces (a shell function such as `claude rc`) is refused; select the profile with `CLAUDE_CONFIG_DIR`.
-- **Token saver.** Unless `orchestrator.eco` is `false`, dispatch adds `-e CS_ECO=on -e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<n>` and the launch line ends `· eco on`. The worker's Bash output is filtered through `agentdock-runner` when it is installed (workers run in `bypassPermissions`), and its reads are soft-guarded. A worker can still run `/cs-eco off` for its own session. Your own session gets eco in Phase 0 step 8a (same switch); early compaction does not apply to it.
+- **Token saver.** Unless `orchestrator.eco` is `false`, dispatch adds `-e CS_ECO=on -e CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=<n>` and the launch line ends `· eco on`. The worker's Bash output is filtered through `nautelle-runner` (or the older `agentdock-runner`) when it is installed (workers run in `bypassPermissions`), and its reads are soft-guarded. A worker can still run `/cs-eco off` for its own session. Your own session gets eco in Phase 0 step 8a (same switch); early compaction does not apply to it.
 - **No secrets on stdout.** The launch line ends `telemetry on → <host:port>` or `telemetry off`; `OTEL_EXPORTER_OTLP_HEADERS` is never printed. `CS_DISPATCH_DRY_RUN=1` prints the tmux command with header values redacted and exits before the worktree exists.
 
 ## The standing obligation — read this before anything else
@@ -458,10 +458,25 @@ off a `Bash` command — outside them, before the tool runs. A fence written as 
 sentence is a fence the hook cannot read. `dispatch.sh` runs `fence.py --check`
 on the brief first and refuses a brief whose lists contradict each other.
 
+**The fence is a collision guard, not a security boundary.** It keeps
+cooperating workers out of each other's files. It sees `Edit`, `Write`,
+`MultiEdit`, `NotebookEdit` and the `Bash` commands it can parse; it does not
+see what a program run by a command writes on its own (`python script.py`,
+`bun run build`). Real isolation needs a sandbox or a container.
+
+**Git-ignored files are fenced like tracked ones** — `.env`, `.env.local`,
+`*.local` and the rest follow `owns:` / `never:`. The one exception is an
+ignored path inside a generated directory (`node_modules/`, `dist/`, `build/`,
+`.next/`, `.turbo/`, `coverage/`, `out/`, `target/`, `__pycache__/`,
+`.pytest_cache/`, `.venv/`, at any depth), which is allowed outside `owns:`.
+
 **`.orchestrator-reply.md` is on the owns-list on purpose.** It is the channel;
 a fence that forbids it turns every question into a silent hang.
 
-**Nothing outside the worktree is writable** except `/tmp`. A worker that needs
+**Nothing outside the worktree is writable** except `/tmp`. The hook is bound
+to the worktree's brief (`fence.py --brief <worktree>/.orchestrator-brief.md`),
+so a worker that runs `cd /tmp` or `cd` into another checkout is still fenced,
+and a bound brief that has gone missing refuses every write. A worker that needs
 a file landed elsewhere (another repository, a docs site) parks it under `/tmp`
 and reports the path; landing it is yours.
 
@@ -496,8 +511,9 @@ ${CLAUDE_SKILL_DIR}/scripts/dispatch.sh <slot> <branch> <board>/round-<HHMM>-<sl
 Always pass the model explicitly. The script creates the worktree from
 `origin/<base>` (or reuses it if the branch matches), pre-records the trust and
 bypass-permissions dialogs so the session does not stop on them, copies the
-brief in as `.orchestrator-brief.md` (git-excluded), wires `fence.py` as a
-`PreToolUse` hook through `--settings` (nothing in the repository is touched),
+brief in as `.orchestrator-brief.md` (git-excluded), wires `fence.py --brief
+<that brief>` as a `PreToolUse` hook through `--settings` (nothing in the
+repository is touched),
 refuses to double-launch, and starts:
 
 ```

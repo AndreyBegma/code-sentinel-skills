@@ -93,7 +93,7 @@ Requirements:
 
 | Command | What it does |
 |---|---|
-| `/cs-eco [on\|off\|default on\|off\|status\|stats\|snippet]` | Token saver for the current session: filtered command output (via `agentdock-runner`), soft read guard and read dedup, cut MCP results, concise working register, haiku `scout` agent; per session plus a machine default |
+| `/cs-eco [on\|off\|default on\|off\|status\|stats\|snippet]` | Token saver for the current session: filtered command output (via `nautelle-runner`), soft read guard and read dedup, cut MCP results, concise working register, haiku `scout` agent; per session plus a machine default |
 
 ## Usage
 
@@ -153,7 +153,7 @@ Requirements:
 
 | Technique | What happens while eco is on |
 |---|---|
-| Command filter | Covered commands (`bun run test`, `tsc`, `git log`…) run as `agentdock-runner filter -- …`, which keeps the failures and drops the noise. This only happens in `bypassPermissions` and `auto` modes: bypass gets an `allow`, and auto gets no decision, so the classifier judges the wrapped command. It never happens in default, plan or acceptEdits. It needs [`agentdock-runner`](https://www.npmjs.com/package/agentdock-runner) on `PATH` (≥ 0.12.1 for auto); without it, everything else still works. `AGENTDOCK_RAW=1 <cmd>` runs one command unfiltered |
+| Command filter | Covered commands (`bun run test`, `tsc`, `git log`…) run as `nautelle-runner filter -- …`, which keeps the failures and drops the noise. This only happens in `bypassPermissions` and `auto` modes: bypass gets an `allow`, and auto gets no decision, so the classifier judges the wrapped command. It never happens in default, plan or acceptEdits. It needs [`nautelle-runner`](https://www.npmjs.com/package/nautelle-runner) on `PATH`; a machine still on its pre-0.14 name `agentdock-runner` (≥ 0.12.1 for auto) is used when `nautelle-runner` is absent. Without either, everything else still works. `NAUTELLE_RAW=1 <cmd>` runs one command unfiltered (`AGENTDOCK_RAW=1` on runners before 0.14; 0.14 and 0.15 accept both) |
 | Read guard | The first whole-file `Read` of a file over 400 lines is refused with its size and an outline of its headings and top-level symbols. Repeating the same call reads it |
 | Read dedup | A repeated `Read` of the same path and range, with the file unchanged, is refused once with "already in context since …". Repeating it reads it. Both soft denials reset at compaction |
 | MCP cut | An MCP result over 16,000 characters becomes head + tail. The full text is saved under the session's state dir and its path is shown |
@@ -164,7 +164,7 @@ Requirements:
 
 The plugin never edits your settings. To use the statusline, run `/cs-eco snippet` and paste the `statusLine` block it prints into `~/.claude/settings.json`, or call the script from your own statusline with the same stdin. The path changes when the plugin updates, so re-run `snippet` after an update.
 
-State lives in `${XDG_STATE_HOME:-~/.local/state}/cs-eco/` and the machine default in `${XDG_CONFIG_HOME:-~/.config}/cs-eco/config.json` (`{"default": "on", "mcpMaxChars": 16000}`). Savings are recorded per session as JSONL rows in AgentDock's `filter.stats` shape.
+State lives in `${XDG_STATE_HOME:-~/.local/state}/cs-eco/` and the machine default in `${XDG_CONFIG_HOME:-~/.config}/cs-eco/config.json` (`{"default": "on", "mcpMaxChars": 16000}`). Savings are recorded per session as JSONL rows in Nautelle's `filter.stats` shape.
 
 ## Autonomous fleet
 
@@ -172,7 +172,7 @@ State lives in `${XDG_STATE_HOME:-~/.local/state}/cs-eco/` and the machine defau
 
 1. **Queue** — open issues labelled `cs:ready` (specify them with `/cs-spec`, or file them with `/cs-issue --auto --ready`). A `## Parallel plan` table in the issue splits it into a wave of slots. `Depends on #N` lines order them; `cs:needs-person` or a `Gate:` line holds them.
 2. **Dispatch** — one `claude` session per issue (`tmux` session `cs-<slot>`, Remote Control on), each in its own git worktree next to the repository, on its own branch, with a model chosen per slot (Opus for decisions, Sonnet for execution).
-3. **Fence** — each brief carries `owns:` / `never:` globs; `fence.py` runs as a `PreToolUse` hook (passed with `--settings`, nothing committed) and refuses writes outside them, including shell writes it can parse.
+3. **Fence** — each brief carries `owns:` / `never:` globs; `fence.py` runs as a `PreToolUse` hook (passed with `--settings`, nothing committed, bound to the worktree's brief so a `cd` elsewhere does not lift it) and refuses writes outside them, including shell writes it can parse. Git-ignored files are fenced like tracked ones, except inside generated directories (`node_modules/`, `dist/`, `.next/`, …). The fence is a best-effort collision guard between cooperating agents, not a security boundary: it sees `Edit`/`Write`/`MultiEdit`/`NotebookEdit` and the `Bash` commands it can parse, not what a program run by a command writes on its own (`python script.py`, `bun run build`). Real isolation needs a sandbox or a container.
 4. **Channel** — workers report through `.orchestrator-reply.md`; `watch.sh` under `Monitor` wakes the orchestrator on PR, reply, idle, dead-session and quota events.
 5. **Merge & refill** — green, mergeable PRs are merged by the orchestrator, worktrees removed, and the next ready issue dispatched in the same pass. Dead workers are resumed in their worktree.
 6. **Token saver** — every worker starts with `/cs-eco` on (`CS_ECO=on`) and compacts at 70 % of the context window; the orchestrator turns eco on for its own session in Phase 0 (no early compaction there). Set `orchestrator.eco: false` to turn this off.

@@ -71,7 +71,7 @@ agents/
 | `/cs-feature <#issue\|desc> [--auto] [--worker]` | Feature or bug fix from request to PR — study, plan, approval (or `--auto`), issue, branch, implement, checks, PR              |
 | `/cs-orchestrator [start\|status\|next\|stop]`   | Autonomous fleet — parallel worker sessions in git worktrees for `cs:ready` issues, auto-merge green PRs, refill slots        |
 | `/cs-worker <brief>`                             | Worker session launched by `/cs-orchestrator` — one issue, one worktree, ownership fence, never merges                        |
-| `/cs-eco [on\|off\|default on\|off\|status\|stats\|snippet]` | Token saver for the current session — agentdock-runner command filter (bypass/auto only), soft read guard + dedup, MCP output cut, working register, `scout` agent; per session + machine default; fleet workers on by default |
+| `/cs-eco [on\|off\|default on\|off\|status\|stats\|snippet]` | Token saver for the current session — nautelle-runner command filter (bypass/auto only; agentdock-runner ≤ 0.13 as fallback), soft read guard + dedup, MCP output cut, working register, `scout` agent; per session + machine default; fleet workers on by default |
 | `/cs-clean [--dry-run] [--auto] [--local] [--abandoned]` | Post-merge cleanup — deletes remote/local branches and clean worktrees of merged PRs, closes issues they resolved but GitHub left open; confirmed unless `--auto` |
 | `/cs-perf [path\|category]`                     | Performance analyzer — N+1 queries, re-renders, memory leaks, bundle size                                                     |
 | `/cs-ux-review [url\|focus]`                    | UX analysis — friction points, redesign proposals with before/after mockups                                                   |

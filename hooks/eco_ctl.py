@@ -35,19 +35,19 @@ def _session(args):
 
 
 def runner_state():
-    """("unavailable", None) | ("owned", None) | ("available", version)."""
-    if os.environ.get("AGENTDOCK_FILTER_STATS"):
-        return "owned", None
+    """("unavailable", None, None) | ("owned", None, None) | ("available", name, version)."""
+    if eco_lib.runner_launched():
+        return "owned", None, None
     import eco_hook
     path = eco_hook.find_runner()
     if not path:
-        return "unavailable", None
+        return "unavailable", None, None
     try:
         out = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=5).stdout
         version = out.split()[0] if out.split() else "?"
     except Exception:
         version = "?"
-    return "available", version
+    return "available", eco_hook.runner_name(path), version
 
 
 def _older(version, than):
@@ -64,17 +64,19 @@ def status_lines(sid):
     where = {"session": "set for this session", "env": "CS_ECO in the environment",
              "default": "machine default", "none": "default off"}[source]
     lines = ["eco: %s (%s)" % ("on" if on else "off", where)]
-    state, version = runner_state()
+    state, name, version = runner_state()
     if state == "unavailable":
-        lines.append("command filter: unavailable (agentdock-runner not installed)")
+        lines.append("command filter: unavailable (nautelle-runner not installed)")
     elif state == "owned":
-        lines.append("command filter: handled by the AgentDock launch of this session")
+        lines.append("command filter: handled by the Nautelle launch of this session")
     else:
         note = ""
         if _older(version, "0.12.1"):
-            note = " — auto mode needs agentdock-runner ≥ 0.12.1; this one rewrites in bypassPermissions only"
-        lines.append("command filter: agentdock-runner %s, rewrites in bypassPermissions and auto only%s"
-                     % (version, note))
+            note = " — auto mode needs runner ≥ 0.12.1; this one rewrites in bypassPermissions only"
+        elif name == "agentdock-runner":
+            note = " — agentdock-runner is the pre-0.14 name; `npm i -g nautelle-runner` replaces it"
+        lines.append("command filter: %s %s, rewrites in bypassPermissions and auto only%s"
+                     % (name, version, note))
     lines.append("read guard (> %d lines) and read dedup: %s" % (eco_lib.GUARD_LINES, "on" if on else "off"))
     limit = int(eco_lib.read_config().get("mcpMaxChars") or eco_lib.MCP_MAX_CHARS)
     lines.append("MCP output cut above %s characters: %s" % ("{:,}".format(limit), "on" if on else "off"))
