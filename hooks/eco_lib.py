@@ -220,15 +220,31 @@ def run_kind(env=None):
     return env.get("CS_ECO_RUN_KIND") or RUN_KIND
 
 
-def filter_env(sid, cwd, env=None):
-    """The AGENTDOCK_FILTER_* environment that makes `agentdock-runner filter`
-    write its rows into this session's stats file."""
+def filter_env(sid, cwd, env=None, runner="nautelle-runner"):
+    """The *_FILTER_* environment that makes the runner's `filter` write its rows
+    into this session's stats file.
+
+    One generation of names, matching the runner that was resolved:
+    nautelle-runner (>= 0.14) gets NAUTELLE_FILTER_*, agentdock-runner (<= 0.13)
+    gets AGENTDOCK_FILTER_*, the only names it knows. Runner 0.14 and 0.15 also
+    read AGENTDOCK_* when the NAUTELLE_* name is unset, but 0.16.0 drops that
+    (Nautelle ADR-0073), so the new runner gets the new names. Setting both
+    would also work today, but every assignment lands in the rewritten command
+    the model reads, and this is a token saver."""
+    prefix = "AGENTDOCK_" if runner == "agentdock-runner" else "NAUTELLE_"
     return {
-        "AGENTDOCK_FILTER_STATS": stats_file(sid, env),
-        "AGENTDOCK_FILTER_PROJECT": project_id(sid, cwd, env),
-        "AGENTDOCK_FILTER_RUN": safe_sid(sid),
-        "AGENTDOCK_FILTER_RUN_KIND": run_kind(env),
+        prefix + "FILTER_STATS": stats_file(sid, env),
+        prefix + "FILTER_PROJECT": project_id(sid, cwd, env),
+        prefix + "FILTER_RUN": safe_sid(sid),
+        prefix + "FILTER_RUN_KIND": run_kind(env),
     }
+
+
+def runner_launched(env=None):
+    """True when the runner launched this session with its Token saver on (it
+    then filters with its own hook). Either name: a 0.14+ launch sets both."""
+    env = os.environ if env is None else env
+    return bool(env.get("NAUTELLE_FILTER_STATS") or env.get("AGENTDOCK_FILTER_STATS"))
 
 
 def write_row(sid, cwd, filter_id, raw_bytes, kept_bytes, bypassed=False, env=None, now=None):
@@ -327,5 +343,5 @@ REGISTER = """cs-eco is on for this session (token saver). Working register:
 - Read narrowly: Grep/Glob first, then Read with offset/limit on the part you need. A Read of a file over 400 lines without offset/limit is refused once with an outline; repeat the call only if you really need all of it.
 - A repeated Read of an unchanged file range is refused once ("already in context") — use what you already have.
 - Broad searches, many-file reads and "where is X used" questions go to the `code-sentinel:scout` subagent (haiku); you get its conclusion, not the file dumps.
-- Commands in bypass/auto mode may run through `agentdock-runner filter`, which keeps the failures and drops the noise. If you need the raw output, prefix the command with AGENTDOCK_RAW=1.
+- Commands in bypass/auto mode may run through `nautelle-runner filter`, which keeps the failures and drops the noise. If you need the raw output, prefix the command with NAUTELLE_RAW=1 (AGENTDOCK_RAW=1 on runners before 0.14).
 - Large MCP tool results are cut to head and tail; the full text is saved and its path is shown — Read that file with offset/limit if you need more."""
