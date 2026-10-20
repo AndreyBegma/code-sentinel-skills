@@ -1,5 +1,20 @@
 # Release Notes
 
+## v1.26.3 (2026-10-20)
+
+### Fixes
+
+- **`/cs-eco` finds `nautelle-runner`** — the AgentDock runner was renamed `nautelle-runner` in runner 0.14.0 (Nautelle ADR-0073), and `find_runner` looked only for `agentdock-runner`, so on a machine with only the new runner filtering silently turned off. It now prefers `nautelle-runner` (its `nautelle-runner-<os>-<arch>` binary) and falls back to `agentdock-runner` for runners up to 0.13. The filter environment is `NAUTELLE_FILTER_*` for the new runner and `AGENTDOCK_FILTER_*` for the old one; runner-launched sessions are detected under either name. `/cs-eco status` names the runner and its version
+- **Docs** — the working register, the eco skill, README, CLAUDE.md and the orchestrator skill say `nautelle-runner filter` and `NAUTELLE_RAW=1` (`AGENTDOCK_RAW=1` for runners before 0.14)
+
+### Files Changed
+
+- `hooks/eco_hook.py`, `hooks/eco_lib.py`, `hooks/eco_ctl.py`, `hooks/eco_test.py` — runner lookup, filter env, status
+- `skills/eco/SKILL.md`, `skills/orchestrator/SKILL.md`, `README.md`, `CLAUDE.md` — docs
+- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` — version bump to 1.26.3
+
+---
+
 ## v1.26.2 (2026-10-19)
 
 ### Fixes
