@@ -6,7 +6,7 @@
 
 Every case runs the hook as Claude Code would — a subprocess fed hook JSON on
 stdin — with HOME, XDG_STATE_HOME and XDG_CONFIG_HOME in a temp dir and a stub
-`agentdock-runner` on PATH that records what it was called with. Nothing here
+`nautelle-runner` on PATH that records what it was called with. Nothing here
 touches the real state, config or settings.
 """
 import json
@@ -34,12 +34,13 @@ import eco_lib  # noqa: E402
 
 SID = "sess-1234"
 
-# The stub answers like agentdock-runner ≥ 0.12.1's filter-hook: rewrite + allow
+# The stub answers like the runner's filter-hook (≥ 0.12.1): rewrite + allow
 # in bypass, rewrite without a decision in auto, nothing otherwise. It records
-# its argv and the AGENTDOCK_* env it saw. STUB_MODE switches it to misbehave.
+# its own name, its argv and the NAUTELLE_*/AGENTDOCK_* env it saw. STUB_MODE
+# switches it to misbehave. Installed as nautelle-runner unless a test says so.
 STUB = r"""#!/bin/sh
 log="$STUB_LOG"
-[ -n "$log" ] && { echo "argv:$*"; env | grep '^AGENTDOCK_' | sort; } >> "$log"
+[ -n "$log" ] && { echo "name:${0##*/}"; echo "argv:$*"; env | grep -E '^(NAUTELLE|AGENTDOCK)_' | sort; } >> "$log"
 case "$1" in --version) echo "0.12.1"; exit 0 ;; esac
 input=$(cat)
 case "$STUB_MODE" in
@@ -73,7 +74,7 @@ class EcoBase(unittest.TestCase):
         self.files = os.path.join(self.root, "files")
         os.makedirs(self.files)
         self.env = {k: v for k, v in os.environ.items()
-                    if not k.startswith(("AGENTDOCK_", "CS_ECO", "XDG_", "CLAUDE_AUTOCOMPACT"))}
+                    if not k.startswith(("AGENTDOCK_", "NAUTELLE_", "CS_ECO", "XDG_", "CLAUDE_AUTOCOMPACT"))}
         self.env.update(
             HOME=self.root,
             XDG_STATE_HOME=os.path.join(self.root, "state"),
@@ -85,8 +86,8 @@ class EcoBase(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def install_stub(self):
-        path = os.path.join(self.bin, "agentdock-runner")
+    def install_stub(self, name="nautelle-runner"):
+        path = os.path.join(self.bin, name)
         with open(path, "w") as f:
             f.write(STUB)
         os.chmod(path, 0o755)
@@ -196,13 +197,36 @@ class BashFilter(EcoBase):
         self.assertEqual(hso["permissionDecision"], "allow")
         cmd = hso["updatedInput"]["command"]
         stats = os.path.join(self.sdir(), "filter-stats.jsonl")
-        self.assertTrue(cmd.startswith("AGENTDOCK_FILTER_STATS=" + stats + " "), cmd)
-        self.assertIn("AGENTDOCK_FILTER_RUN=" + SID, cmd)
-        self.assertIn("AGENTDOCK_FILTER_RUN_KIND=skill", cmd)
+        self.assertTrue(cmd.startswith("NAUTELLE_FILTER_STATS=" + stats + " "), cmd)
+        self.assertIn("NAUTELLE_FILTER_RUN=" + SID, cmd)
+        self.assertIn("NAUTELLE_FILTER_RUN_KIND=skill", cmd)
+        self.assertNotIn("AGENTDOCK_", cmd)
         self.assertTrue(cmd.endswith(" /opt/runner filter -- bun run test"), cmd)
         calls = self.stub_calls()
+        self.assertIn("name:nautelle-runner", calls)
         self.assertIn("argv:filter-hook", calls)
-        self.assertIn("AGENTDOCK_FILTER_STATS=" + stats, calls)  # the runner saw it too
+        self.assertIn("NAUTELLE_FILTER_STATS=" + stats, calls)  # the runner saw it too
+        self.assertNotIn("AGENTDOCK_FILTER_STATS", calls)
+
+    def test_only_old_runner_gets_the_old_names(self):
+        os.remove(os.path.join(self.bin, "nautelle-runner"))
+        self.install_stub("agentdock-runner")
+        cmd = self.hook(self.bash())["hookSpecificOutput"]["updatedInput"]["command"]
+        stats = os.path.join(self.sdir(), "filter-stats.jsonl")
+        self.assertTrue(cmd.startswith("AGENTDOCK_FILTER_STATS=" + stats + " "), cmd)
+        self.assertIn("AGENTDOCK_FILTER_RUN_KIND=skill", cmd)
+        self.assertNotIn("NAUTELLE_", cmd)
+        calls = self.stub_calls()
+        self.assertIn("name:agentdock-runner", calls)
+        self.assertIn("AGENTDOCK_FILTER_STATS=" + stats, calls)
+
+    def test_both_runners_nautelle_wins(self):
+        self.install_stub("agentdock-runner")
+        cmd = self.hook(self.bash())["hookSpecificOutput"]["updatedInput"]["command"]
+        self.assertTrue(cmd.startswith("NAUTELLE_FILTER_STATS="), cmd)
+        calls = self.stub_calls()
+        self.assertIn("name:nautelle-runner", calls)
+        self.assertNotIn("name:agentdock-runner", calls)
 
     def test_auto_rewrites_with_no_decision(self):
         out = self.hook(self.bash(mode="auto"))
@@ -223,7 +247,7 @@ class BashFilter(EcoBase):
 
     def test_runner_kind_override(self):
         out = self.hook(self.bash(), CS_ECO_RUN_KIND="card")
-        self.assertIn("AGENTDOCK_FILTER_RUN_KIND=card", out["hookSpecificOutput"]["updatedInput"]["command"])
+        self.assertIn("NAUTELLE_FILTER_RUN_KIND=card", out["hookSpecificOutput"]["updatedInput"]["command"])
 
     def test_kill_guard_denial_wins(self):
         command = "kill $(pgrep -f node)"
@@ -234,16 +258,19 @@ class BashFilter(EcoBase):
         self.assertEqual(self.stub_calls(), "")
 
     def test_runner_launched_session_is_left_to_the_runner(self):
-        self.assertIsNone(self.hook(self.bash(), AGENTDOCK_FILTER_STATS="/x/filter-stats.jsonl"))
+        for var in ("NAUTELLE_FILTER_STATS", "AGENTDOCK_FILTER_STATS"):
+            self.assertIsNone(self.hook(self.bash(), **{var: "/x/filter-stats.jsonl"}), var)
         self.assertEqual(self.stub_calls(), "")
+        r = self.ctl("status", "--session", SID, NAUTELLE_FILTER_STATS="/x/filter-stats.jsonl")
+        self.assertIn("command filter: handled by the Nautelle launch of this session", r.stdout)
 
     def test_no_runner_no_rewrite_and_status_says_so(self):
-        os.remove(os.path.join(self.bin, "agentdock-runner"))
+        os.remove(os.path.join(self.bin, "nautelle-runner"))
         shutil.rmtree(self.sdir(), ignore_errors=True)
         self.eco_on()
         self.assertIsNone(self.hook(self.bash()))
         r = self.ctl("status", "--session", SID)
-        self.assertIn("command filter unavailable (agentdock-runner not installed)", r.stdout.replace(":", ""))
+        self.assertIn("command filter unavailable (nautelle-runner not installed)", r.stdout.replace(":", ""))
 
     def test_fails_open(self):
         for mode in ("garbage", "fail", "ask"):
@@ -285,48 +312,81 @@ class BashFilter(EcoBase):
 
 
 class RunnerResolution(EcoBase):
-    def test_wrapper_resolves_to_platform_binary(self):
-        pkg = eco_hook._platform_package()
-        root = os.path.join(self.root, "lib", "node_modules", "agentdock-runner")
-        os.makedirs(os.path.join(root, "bin"))
-        js = os.path.join(root, "bin", "agentdock-runner.js")
+    def npm_install(self, name, platform_binary=True, hoisted=False):
+        """A fake global npm install of `name`: the Node shim linked from PATH and,
+        optionally, the compiled platform binary nested or hoisted next to it."""
+        pkg = eco_hook._platform_package(name)
+        nm = os.path.join(self.root, "lib", "node_modules")
+        js = os.path.join(nm, name, "bin", name + ".js")
+        os.makedirs(os.path.dirname(js), exist_ok=True)
         with open(js, "w") as f:
             f.write("#!/usr/bin/env node\n")
         os.chmod(js, 0o755)
-        binary = os.path.join(root, "node_modules", pkg, "bin", "agentdock-runner")
-        os.makedirs(os.path.dirname(binary))
-        with open(binary, "w") as f:
-            f.write("#!/bin/sh\n")
-        os.chmod(binary, 0o755)
-        os.remove(os.path.join(self.bin, "agentdock-runner"))
-        os.symlink(js, os.path.join(self.bin, "agentdock-runner"))
+        link = os.path.join(self.bin, name)
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(js, link)
+        binary = None
+        if platform_binary:
+            base = nm if hoisted else os.path.join(nm, name, "node_modules")
+            binary = os.path.join(base, pkg, "bin", name)
+            os.makedirs(os.path.dirname(binary), exist_ok=True)
+            with open(binary, "w") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(binary, 0o755)
+        return link, binary
+
+    def test_platform_package_names(self):
+        self.assertTrue(eco_hook._platform_package().startswith("nautelle-runner-"))
+        self.assertTrue(eco_hook._platform_package("agentdock-runner").startswith("agentdock-runner-"))
+
+    def test_only_nautelle_resolves_to_its_platform_binary(self):
+        _, binary = self.npm_install("nautelle-runner")
+        self.assertTrue(binary.endswith(os.path.join(eco_hook._platform_package(), "bin", "nautelle-runner")))
         self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), binary)
+        self.assertEqual(eco_hook.runner_name(binary), "nautelle-runner")
+
+    def test_only_agentdock_falls_back_to_the_old_runner(self):
+        os.remove(os.path.join(self.bin, "nautelle-runner"))
+        _, binary = self.npm_install("agentdock-runner")
+        self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), binary)
+        self.assertEqual(eco_hook.runner_name(binary), "agentdock-runner")
+
+    def test_both_installed_nautelle_wins(self):
+        _, old = self.npm_install("agentdock-runner")
+        _, new = self.npm_install("nautelle-runner")
+        self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), new)
+        self.assertNotEqual(new, old)
+
+    def test_neither_installed(self):
+        os.remove(os.path.join(self.bin, "nautelle-runner"))
+        self.assertIsNone(eco_hook.find_runner({"PATH": self.bin}))
 
     def test_hoisted_and_wrapper_fallbacks(self):
-        pkg = eco_hook._platform_package()
-        nm = os.path.join(self.root, "lib", "node_modules")
-        js = os.path.join(nm, "agentdock-runner", "bin", "agentdock-runner.js")
-        os.makedirs(os.path.dirname(js))
-        with open(js, "w") as f:
-            f.write("#!/usr/bin/env node\n")
-        os.chmod(js, 0o755)
-        link = os.path.join(self.bin, "agentdock-runner")
-        os.remove(link)
-        os.symlink(js, link)
-        # no platform package anywhere (and no npm on this PATH): the wrapper
-        self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), link)
-        hoisted = os.path.join(nm, pkg, "bin", "agentdock-runner")
-        os.makedirs(os.path.dirname(hoisted))
-        with open(hoisted, "w") as f:
-            f.write("#!/bin/sh\n")
-        os.chmod(hoisted, 0o755)
-        self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), hoisted)
+        for name in ("nautelle-runner", "agentdock-runner"):
+            for n in ("nautelle-runner", "agentdock-runner"):
+                if os.path.lexists(os.path.join(self.bin, n)):
+                    os.remove(os.path.join(self.bin, n))
+            shutil.rmtree(os.path.join(self.root, "lib"), ignore_errors=True)
+            # no platform package anywhere (and no npm on this PATH): the wrapper
+            link, _ = self.npm_install(name, platform_binary=False)
+            self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), link, name)
+            _, hoisted = self.npm_install(name, hoisted=True)
+            self.assertEqual(eco_hook.find_runner({"PATH": self.bin}), hoisted, name)
 
     def test_resolved_once_per_session(self):
         self.eco_on()
         self.hook(self.bash())
         with open(os.path.join(self.sdir(), "runner")) as f:
-            self.assertEqual(f.read().strip(), os.path.join(self.bin, "agentdock-runner"))
+            self.assertEqual(f.read().strip(), os.path.join(self.bin, "nautelle-runner"))
+
+    def test_status_names_the_old_runner(self):
+        os.remove(os.path.join(self.bin, "nautelle-runner"))
+        self.install_stub("agentdock-runner")
+        self.eco_on()
+        r = self.ctl("status", "--session", SID)
+        self.assertIn("command filter: agentdock-runner 0.12.1, rewrites in bypassPermissions and auto only", r.stdout)
+        self.assertIn("npm i -g nautelle-runner", r.stdout)
 
 
 class ReadGuard(EcoBase):
@@ -410,6 +470,8 @@ class ReadGuard(EcoBase):
         self.hook(self.read(path, event="PostToolUse"))
         out = self.hook({"session_id": SID, "hook_event_name": "SessionStart", "source": "compact"})
         self.assertIn("Working register", out["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("`nautelle-runner filter`", out["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("NAUTELLE_RAW=1", out["hookSpecificOutput"]["additionalContext"])
         self.assertIsNone(self.hook(self.read(path)))
         big = self.write_file("big.md", big_text())
         self.assertIsNotNone(self.hook(self.read(big)))  # pending denial…
@@ -541,7 +603,8 @@ class Ctl(EcoBase):
         self.eco_on()
         r = self.ctl("status", "--session", SID)
         self.assertIn("eco: on (set for this session)", r.stdout)
-        self.assertIn("agentdock-runner 0.12.1, rewrites in bypassPermissions and auto only", r.stdout)
+        self.assertIn("nautelle-runner 0.12.1, rewrites in bypassPermissions and auto only", r.stdout)
+        self.assertNotIn("pre-0.14 name", r.stdout)
         self.assertIn("early compaction: off", r.stdout)
         r = self.ctl("status", "--session", SID, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="70")
         self.assertIn("early compaction: on at 70%", r.stdout)
@@ -611,7 +674,7 @@ class Latency(EcoBase):
 
     def test_p95_bash_filter_on(self):
         self.eco_on()
-        stub = os.path.join(self.bin, "agentdock-runner")
+        stub = os.path.join(self.bin, "nautelle-runner")
         with open(stub, "w") as f:  # a stub without the logging, as fast as a real exec
             f.write("#!/bin/sh\necho '{}'\n")
         self.assertLessEqual(self.p95(self.bash()), self.BUDGET_MS)

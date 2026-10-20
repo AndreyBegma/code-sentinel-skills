@@ -11,11 +11,13 @@ Events: PreToolUse (Bash, Read), PostToolUse (Read, mcp__*), SessionStart and
 PreCompact. It runs in every session that loads the plugin, so nothing happens
 unless `eco_lib.resolve` says eco is on for this session.
 
-  PreToolUse Bash  (E1, E3) — delegate to `agentdock-runner filter-hook`, only
+  PreToolUse Bash  (E1, E3) — delegate to `nautelle-runner filter-hook` (or
+                   `agentdock-runner` on runner <= 0.13), only
                    in bypassPermissions and auto. The runner decides: rewrite +
                    allow in bypass, rewrite without a decision in auto (≥ 0.12.1),
                    nothing otherwise. The rewritten command gets this session's
-                   AGENTDOCK_FILTER_* assignments as a prefix, so the runner's
+                   NAUTELLE_FILTER_* (AGENTDOCK_FILTER_* for the old runner)
+                   assignments as a prefix, so the runner's
                    `filter` writes its stats rows into our state dir. Nothing
                    when kill_guard would deny the command, nothing when the
                    session was launched by the runner (it already filters).
@@ -56,34 +58,34 @@ def deny(reason):
 
 # ---- Bash: the command filter ---------------------------------------------------
 
-def _platform_package():
+# The runner was renamed from agentdock-runner to nautelle-runner in 0.14.0
+# (Nautelle ADR-0073). Prefer the new name; fall back to the old one for
+# machines still on runner <= 0.13.
+RUNNER_NAMES = ("nautelle-runner", "agentdock-runner")
+
+
+def _platform_package(name="nautelle-runner"):
     import platform
     osname = {"linux": "linux", "darwin": "darwin", "win32": "win32"}.get(sys.platform, sys.platform)
     machine = platform.machine().lower()
     arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(machine, machine)
-    return "agentdock-runner-%s-%s" % (osname, arch)
+    return "%s-%s-%s" % (name, osname, arch)
 
 
 def _executable(path):
     return bool(path) and os.path.isfile(path) and os.access(path, os.X_OK)
 
 
-def find_runner(env=None):
-    """The compiled runner binary, not the npm Node shim in front of it: the shim
-    costs ~40 ms of Node start-up on every Bash call. Falls back to the shim."""
-    import shutil
-    env = os.environ if env is None else env
-    wrapper = shutil.which("agentdock-runner", path=env.get("PATH"))
-    if not wrapper:
-        return None
+def _resolve(name, wrapper):
+    """The compiled binary behind the npm shim `wrapper` of runner `name`."""
     real = os.path.realpath(wrapper)
     if not real.endswith(".js"):
         return real  # already the binary
-    pkg = _platform_package()
-    root = os.path.dirname(os.path.dirname(real))  # …/agentdock-runner
+    pkg = _platform_package(name)
+    root = os.path.dirname(os.path.dirname(real))  # …/<name>
     candidates = [
-        os.path.join(root, "node_modules", pkg, "bin", "agentdock-runner"),
-        os.path.join(os.path.dirname(root), pkg, "bin", "agentdock-runner"),  # hoisted
+        os.path.join(root, "node_modules", pkg, "bin", name),
+        os.path.join(os.path.dirname(root), pkg, "bin", name),  # hoisted
     ]
     for c in candidates:
         if _executable(c):
@@ -92,12 +94,31 @@ def find_runner(env=None):
         import subprocess
         npm_root = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True,
                                   timeout=3).stdout.strip()
-        c = os.path.join(npm_root, pkg, "bin", "agentdock-runner")
+        c = os.path.join(npm_root, pkg, "bin", name)
         if npm_root and _executable(c):
             return c
     except Exception:
         pass
     return wrapper
+
+
+def find_runner(env=None):
+    """The compiled runner binary, not the npm Node shim in front of it: the shim
+    costs ~40 ms of Node start-up on every Bash call. Falls back to the shim.
+    `nautelle-runner` wins over `agentdock-runner` when both are installed."""
+    import shutil
+    env = os.environ if env is None else env
+    for name in RUNNER_NAMES:
+        wrapper = shutil.which(name, path=env.get("PATH"))
+        if wrapper:
+            return _resolve(name, wrapper)
+    return None
+
+
+def runner_name(path):
+    """`agentdock-runner` for a runner <= 0.13 binary or shim, else `nautelle-runner`."""
+    return "agentdock-runner" if os.path.basename(path or "").startswith("agentdock-runner") \
+        else "nautelle-runner"
 
 
 def runner_path(sid, env=None):
@@ -125,7 +146,7 @@ def runner_path(sid, env=None):
 def on_bash(data, sid):
     if data.get("permission_mode") not in FILTER_MODES:
         return
-    if os.environ.get("AGENTDOCK_FILTER_STATS"):
+    if eco_lib.runner_launched():
         return  # launched by the runner with Token saver on: its own hook filters
     tool_input = data.get("tool_input") or {}
     command = tool_input.get("command")
@@ -139,7 +160,7 @@ def on_bash(data, sid):
         return
     import shlex
     import subprocess
-    fenv = eco_lib.filter_env(sid, data.get("cwd") or os.getcwd())
+    fenv = eco_lib.filter_env(sid, data.get("cwd") or os.getcwd(), runner=runner_name(runner))
     env = dict(os.environ)
     env.update(fenv)
     out = subprocess.run([runner, "filter-hook"], input=json.dumps(data), capture_output=True,
